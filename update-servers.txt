@@ -1,0 +1,124 @@
+#!/bin/bash
+
+# update-servers.sh
+# Updates all Hytale servers listed in servers.txt using hytale-downloader
+# Assumes the downloader is already updated and in PATH
+
+DOWNLOADER="hytale-downloader"
+SCRIPT_DIR="/home/rabe/Hytale/Downloads"
+
+SERVERS_FILE="$SCRIPT_DIR/servers.txt"
+UPDATE_ZIP="$SCRIPT_DIR/update.zip"
+VERSION_FILE="$SCRIPT_DIR/version.txt"
+ASSETS_PATH="$SCRIPT_DIR/Assets.zip"
+TMP_DIR="/tmp/hytale-update-$$"
+
+# === Function to perform the update ===
+perform_update() {
+    echo "=== Starting Hytale server update ==="
+
+    # Download update.zip
+    echo "Downloading update.zip..."
+    $DOWNLOADER -download-path "$UPDATE_ZIP"
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to download update.zip"
+        exit 1
+    fi
+
+    # Prepare temp extraction
+    rm -rf "$TMP_DIR"
+    mkdir -p "$TMP_DIR"
+
+    echo "Extracting update.zip to temporary folder ($TMP_DIR)..."
+    unzip -qq "$UPDATE_ZIP" -d "$TMP_DIR"
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to extract update.zip"
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+    echo "Extraction complete."
+
+    # Validate structure
+    if [ ! -d "$TMP_DIR/Server" ]; then
+        echo "Error: update.zip missing 'Server/' directory"
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+
+    if [ ! -f "$TMP_DIR/Assets.zip" ]; then
+        echo "Error: update.zip missing 'Assets.zip'"
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+
+    # Copy Assets.zip once
+    echo "Updating Assets.zip..."
+    cp -f "$TMP_DIR/Assets.zip" "$ASSETS_PATH"
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to copy Assets.zip"
+        rm -rf "$TMP_DIR"
+        exit 1
+    fi
+
+    # Update each server
+    ALL_OK=true
+    while IFS= read -r SERVER_PATH || [ -n "$SERVER_PATH" ]; do
+        [ -z "$SERVER_PATH" ] && continue
+
+        if [ ! -d "$SERVER_PATH" ]; then
+            echo "Server path $SERVER_PATH does not exist. Creating..."
+            mkdir -p "$SERVER_PATH" || { echo "Error creating $SERVER_PATH"; ALL_OK=false; continue; }
+        fi
+
+        echo "Updating server at $SERVER_PATH..."
+        cp -a "$TMP_DIR/Server/." "$SERVER_PATH/" || { echo "Error updating $SERVER_PATH"; ALL_OK=false; continue; }
+        echo "Server $SERVER_PATH updated."
+    done < "$SERVERS_FILE"
+
+    # Update version.txt only if all servers succeeded
+    if [ "$ALL_OK" = true ]; then
+        echo "$CURRENT_VERSION" > "$VERSION_FILE"
+        echo -e "\nAll servers updated successfully. Version recorded."
+    else
+        echo -e "\nSome servers failed. Version not recorded."
+    fi
+
+    # Cleanup
+    rm -rf "$TMP_DIR"
+}
+
+# === Main script logic ===
+
+# Check prerequisites
+if [ ! -f "$SERVERS_FILE" ]; then
+    echo "Error: $SERVERS_FILE not found!"
+    exit 1
+fi
+
+# Get current downloader version
+CURRENT_VERSION=$($DOWNLOADER -print-version 2>&1)
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to get downloader version."
+    exit 1
+fi
+echo "Current Hytale-Downloader version: $CURRENT_VERSION"
+
+# Check if forced update
+if [ "$1" == "-force-update" ]; then
+    echo "Force update requested."
+    perform_update
+    exit 0
+fi
+
+# Compare last downloaded version
+LAST_VERSION=""
+[ -f "$VERSION_FILE" ] && LAST_VERSION=$(cat "$VERSION_FILE")
+
+if [ "$CURRENT_VERSION" == "$LAST_VERSION" ]; then
+    echo "Server is already up to date."
+    exit 0
+else
+    echo "New version detected. Performing update..."
+    perform_update
+    exit 0
+fi
